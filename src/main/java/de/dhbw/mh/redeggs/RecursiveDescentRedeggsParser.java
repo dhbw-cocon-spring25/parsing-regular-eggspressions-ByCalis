@@ -1,52 +1,143 @@
 package de.dhbw.mh.redeggs;
 
-import static de.dhbw.mh.redeggs.Range.range;
-import static de.dhbw.mh.redeggs.Range.single;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-/**
- * A parser for regular expressions using recursive descent parsing.
- * This class is responsible for converting a regular expression string into a
- * tree representation of a {@link RegularEggspression}.
- */
-public class RecursiveDescentRedeggsParser {
+import static de.dhbw.mh.redeggs.CodePointRange.single;
 
-	/**
-	 * The symbol factory used to create symbols for the regular expression.
-	 */
-	protected final SymbolFactory symbolFactory;
+public class AlternativeRegexParser {
 
-	/**
-	 * Constructs a new {@code RecursiveDescentRedeggsParser} with the specified
-	 * symbol factory.
-	 *
-	 * @param symbolFactory the factory used to create symbols for parsing
-	 */
-	public RecursiveDescentRedeggsParser(SymbolFactory symbolFactory) {
-		this.symbolFactory = symbolFactory;
-	}
+    private final SymbolFactory factory;
+    private String pattern;
+    private int pos;
 
-	/**
-	 * Parses a regular expression string into an abstract syntax tree (AST).
-	 * 
-	 * This class uses recursive descent parsing to convert a given regular
-	 * expression into a tree structure that can be processed or compiled further.
-	 * The AST nodes represent different components of the regex such as literals,
-	 * operators, and groups.
-	 *
-	 * @param regex the regular expression to parse
-	 * @return the {@link RegularEggspression} representation of the parsed regex
-	 * @throws RedeggsParseException if the parsing fails or the regex is invalid
-	 */
-	public RegularEggspression parse(String regex) throws RedeggsParseException {
-		// TODO: Implement the recursive descent parsing to convert `regex` into an AST.
-		// This is a placeholder implementation to demonstrate how to create a symbol.
+    public AlternativeRegexParser(SymbolFactory factory) {
+        this.factory = factory;
+    }
 
-		// Create a new symbol using the symbol factory
-		VirtualSymbol symbol = symbolFactory.newSymbol()
-				.include(single('_'), range('a', 'z'), range('A', 'Z'))
-				.andNothingElse();
+    public RegularEggspression analyze(String regex) throws RedeggsParseException {
+        this.pattern = regex;
+        this.pos = 0;
+        return buildUnion();
+    }
 
-		// Return a dummy Literal RegularExpression for now
-		return new RegularEggspression.Literal(symbol);
-	}
+    private RegularEggspression buildUnion() throws RedeggsParseException {
+        RegularEggspression left = buildConcat();
+        while (current('|')) {
+            consume();
+            RegularEggspression right = buildConcat();
+            left = new RegularEggspression.Alternation(left, right);
+        }
+        return left;
+    }
+
+    private RegularEggspression buildConcat() throws RedeggsParseException {
+        RegularEggspression left = buildRepetition();
+        while (hasMore() && (isLiteral(peek()) || peek() == '[' || peek() == '(')) {
+            RegularEggspression right = buildRepetition();
+            left = new RegularEggspression.Concatenation(left, right);
+        }
+        return left;
+    }
+
+    private RegularEggspression buildRepetition() throws RedeggsParseException {
+        RegularEggspression base = resolveAtom();
+        if (current('*')) {
+            consume();
+            return new RegularEggspression.Star(base);
+        }
+        return base;
+    }
+
+    private RegularEggspression resolveAtom() throws RedeggsParseException {
+        if (!hasMore()) throw new RedeggsParseException("Unexpected end", pos);
+
+        char ch = peek();
+
+        if (isLiteral(ch)) {
+            return new RegularEggspression.Literal(factory.newSymbol().include(single(consume())).andNothingElse());
+        }
+
+        if (ch == '(') {
+            consume();
+            RegularEggspression inner = buildUnion();
+            expect(')');
+            return inner;
+        }
+
+        if (ch == '[') {
+            consume();
+            boolean negate = current('^');
+            if (negate) consume();
+
+            List<CodePointRange> ranges = new ArrayList<>();
+            while (!current(']')) {
+                char start = expectLiteral();
+                if (current('-')) {
+                    consume();
+                    char end = expectLiteral();
+                    ranges.add(CodePointRange.range(start, end));
+                } else {
+                    ranges.add(single(start));
+                }
+            }
+            consume(); // consume ']'
+
+            var symbolBuilder = factory.newSymbol();
+            if (negate) symbolBuilder.exclude(ranges.toArray(new CodePointRange[0]));
+            else symbolBuilder.include(ranges.toArray(new CodePointRange[0]));
+
+            return new RegularEggspression.Literal(symbolBuilder.andNothingElse());
+        }
+
+        if (ch == 'ε') {
+            consume();
+            return new RegularEggspression.EmptyWord();
+        }
+
+        if (ch == '∅') {
+            consume();
+            return new RegularEggspression.EmptySet();
+        }
+
+        throw new RedeggsParseException("Unknown character: " + ch, pos);
+    }
+
+    // Utils
+
+    private boolean hasMore() {
+        return pos < pattern.length();
+    }
+
+    private char peek() {
+        return pattern.charAt(pos);
+    }
+
+    private boolean current(char expected) {
+        return hasMore() && peek() == expected;
+    }
+
+    private char consume() {
+        return pattern.charAt(pos++);
+    }
+
+    private void expect(char expected) throws RedeggsParseException {
+        if (!current(expected)) {
+            throw new RedeggsParseException("Expected '" + expected + "'", pos);
+        }
+        consume();
+    }
+
+    private boolean isLiteral(char c) {
+        return Character.isLetterOrDigit(c) || c == '_';
+    }
+
+    private char expectLiteral() throws RedeggsParseException {
+        if (!hasMore() || !isLiteral(peek())) {
+            throw new RedeggsParseException("Expected literal", pos);
+        }
+        return consume();
+    }
 }
